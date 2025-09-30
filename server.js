@@ -1,150 +1,82 @@
+// server.js
+require('dotenv').config();
 const express = require('express');
-const sqlite3 = require('sqlite3').verbose();
 const cors = require('cors');
-const path = require('path');
+const { pool, init } = require('./db');
 
 const app = express();
-const PORT = process.env.PORT || 3001;
-
-// Middleware
 app.use(cors());
 app.use(express.json());
-app.use(express.static('public'));
 
-// Initialize SQLite database
-const db = new sqlite3.Database(':memory:');
-
-// Create tables
-db.serialize(() => {
-  db.run(`CREATE TABLE IF NOT EXISTS products (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    category TEXT NOT NULL,
-    quantity INTEGER NOT NULL,
-    price REAL NOT NULL,
-    description TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  )`);
-
-  // Insert sample data
-  const sampleProducts = [
-    ['Laptop Pro', 'Electronics', 15, 1299.99, 'High-performance laptop'],
-    ['Wireless Mouse', 'Electronics', 45, 29.99, 'Ergonomic wireless mouse'],
-    ['Office Chair', 'Furniture', 8, 199.99, 'Comfortable office chair'],
-    ['Coffee Beans', 'Food', 120, 12.99, 'Premium coffee beans'],
-    ['Notebook Set', 'Office Supplies', 200, 8.99, 'Pack of 3 notebooks']
-  ];
-
-  const stmt = db.prepare('INSERT INTO products (name, category, quantity, price, description) VALUES (?, ?, ?, ?, ?)');
-  sampleProducts.forEach(product => {
-    stmt.run(product);
-  });
-  stmt.finalize();
+// Inicializa esquema al arrancar
+init().catch(err => {
+  console.error('DB init error:', err);
+  process.exit(1);
 });
 
-// API Routes
-app.get('/api/products', (req, res) => {
-  db.all('SELECT * FROM products ORDER BY created_at DESC', [], (err, rows) => {
-    if (err) {
-      res.status(500).json({ error: err.message });
-      return;
-    }
+// Salud
+app.get('/', (_req, res) => res.send('Inventory API OK'));
+
+// ====== Endpoints ejemplo ======
+// GET: listar productos
+app.get('/api/products', async (_req, res) => {
+  try {
+    const [rows] = await pool.query(
+      'SELECT id, name, price, created_at FROM products ORDER BY id DESC LIMIT 100'
+    );
     res.json(rows);
-  });
-});
-
-app.get('/api/products/:id', (req, res) => {
-  const { id } = req.params;
-  db.get('SELECT * FROM products WHERE id = ?', [id], (err, row) => {
-    if (err) {
-      res.status(500).json({ error: err.message });
-      return;
-    }
-    if (!row) {
-      res.status(404).json({ error: 'Product not found' });
-      return;
-    }
-    res.json(row);
-  });
-});
-
-app.post('/api/products', (req, res) => {
-  const { name, category, quantity, price, description } = req.body;
-  
-  if (!name || !category || quantity === undefined || price === undefined) {
-    res.status(400).json({ error: 'Missing required fields' });
-    return;
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'DB error' });
   }
-
-  db.run(
-    'INSERT INTO products (name, category, quantity, price, description) VALUES (?, ?, ?, ?, ?)',
-    [name, category, quantity, price, description],
-    function(err) {
-      if (err) {
-        res.status(500).json({ error: err.message });
-        return;
-      }
-      res.json({ id: this.lastID, message: 'Product created successfully' });
-    }
-  );
 });
 
-app.put('/api/products/:id', (req, res) => {
-  const { id } = req.params;
-  const { name, category, quantity, price, description } = req.body;
-  
-  db.run(
-    'UPDATE products SET name = ?, category = ?, quantity = ?, price = ?, description = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-    [name, category, quantity, price, description, id],
-    function(err) {
-      if (err) {
-        res.status(500).json({ error: err.message });
-        return;
-      }
-      if (this.changes === 0) {
-        res.status(404).json({ error: 'Product not found' });
-        return;
-      }
-      res.json({ message: 'Product updated successfully' });
-    }
-  );
+// POST: crear producto
+app.post('/api/products', async (req, res) => {
+  try {
+    const { name, price } = req.body;
+    if (!name || price == null) return res.status(400).json({ error: 'name/price requeridos' });
+
+    const [r] = await pool.execute(
+      'INSERT INTO products(name, price) VALUES(?, ?)',
+      [name, price]
+    );
+    res.status(201).json({ id: r.insertId });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'DB error' });
+  }
 });
 
-app.delete('/api/products/:id', (req, res) => {
-  const { id } = req.params;
-  
-  db.run('DELETE FROM products WHERE id = ?', [id], function(err) {
-    if (err) {
-      res.status(500).json({ error: err.message });
-      return;
-    }
-    if (this.changes === 0) {
-      res.status(404).json({ error: 'Product not found' });
-      return;
-    }
-    res.json({ message: 'Product deleted successfully' });
-  });
+// PUT: actualizar producto
+app.put('/api/products/:id', async (req, res) => {
+  try {
+    const { name, price } = req.body;
+    const { id } = req.params;
+    const [r] = await pool.execute(
+      'UPDATE products SET name = COALESCE(?, name), price = COALESCE(?, price) WHERE id = ?',
+      [name ?? null, price ?? null, id]
+    );
+    if (r.affectedRows === 0) return res.status(404).json({ error: 'no existe' });
+    res.json({ ok: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'DB error' });
+  }
 });
 
-// Dashboard stats
-app.get('/api/stats', (req, res) => {
-  db.all(`
-    SELECT 
-      COUNT(*) as total_products,
-      SUM(quantity) as total_items,
-      COUNT(DISTINCT category) as categories,
-      SUM(quantity * price) as total_value
-    FROM products
-  `, [], (err, row) => {
-    if (err) {
-      res.status(500).json({ error: err.message });
-      return;
-    }
-    res.json(row[0]);
-  });
+// DELETE: eliminar producto
+app.delete('/api/products/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const [r] = await pool.execute('DELETE FROM products WHERE id = ?', [id]);
+    if (r.affectedRows === 0) return res.status(404).json({ error: 'no existe' });
+    res.json({ ok: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'DB error' });
+  }
 });
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`API escuchando en http://localhost:${PORT}`));
