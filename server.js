@@ -1,12 +1,6 @@
-const path = require('path');
-
-app.use(express.static(path.join(__dirname, 'public')));
-app.get('/', (_req, res) =>
-  res.sendFile(path.join(__dirname, 'public', 'index.html'))
-);
-
 // server.js
 require('dotenv').config();
+const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const { pool, init } = require('./db');
@@ -15,17 +9,19 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Inicializa esquema al arrancar
+// Servir estáticos (HTML/CSS/JS) desde /public
+app.use(express.static(path.join(__dirname, 'public')));
+app.get('/', (_req, res) =>
+  res.sendFile(path.join(__dirname, 'public', 'index.html'))
+);
+
+// Inicializa el esquema en MySQL al arrancar
 init().catch(err => {
   console.error('DB init error:', err);
   process.exit(1);
 });
 
-// Salud
-app.get('/', (_req, res) => res.send('Inventory API OK'));
-
-// ====== Endpoints ejemplo ======
-// GET: listar productos
+// ====== API ======
 app.get('/api/products', async (_req, res) => {
   try {
     const [rows] = await pool.query(
@@ -38,12 +34,10 @@ app.get('/api/products', async (_req, res) => {
   }
 });
 
-// POST: crear producto
 app.post('/api/products', async (req, res) => {
   try {
     const { name, price } = req.body;
     if (!name || price == null) return res.status(400).json({ error: 'name/price requeridos' });
-
     const [r] = await pool.execute(
       'INSERT INTO products(name, price) VALUES(?, ?)',
       [name, price]
@@ -55,7 +49,6 @@ app.post('/api/products', async (req, res) => {
   }
 });
 
-// PUT: actualizar producto
 app.put('/api/products/:id', async (req, res) => {
   try {
     const { name, price } = req.body;
@@ -72,7 +65,6 @@ app.put('/api/products/:id', async (req, res) => {
   }
 });
 
-// DELETE: eliminar producto
 app.delete('/api/products/:id', async (req, res) => {
   try {
     const { id } = req.params;
